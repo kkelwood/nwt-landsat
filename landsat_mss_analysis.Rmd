@@ -1,0 +1,346 @@
+---
+title: "explore"
+author: "Kelsey Elwood"
+date: "3/16/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(lubridate)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(plotrix)
+```
+
+# NDVI exploration
+
+```{r}
+# Load in csv file with summary NDVI values (e.g. mean, max, min, sd, cv)
+landsat_ndvi <- read.csv("/Volumes/PHENOCAMWSN/Landsat_EarthExplorer/Output/landsat_ndvi.csv") %>% 
+    mutate(date = as.POSIXct(date)) %>% 
+    mutate(YEAR = year(date)) %>% 
+    mutate(MONTH = month(date)) %>% 
+    mutate(DAY = day(date)) %>% 
+    mutate(MMDD = paste0(MONTH, "-", DAY)) %>% 
+    mutate(MMDD = as.POSIXct(MMDD, format = "%m-%d"))
+
+```
+
+```{r}
+# Create plot of NDVI values over the growing season. Each point represents an MSS scene taken between 1973 and 1992.
+
+# Define which variables are of interest: mean, max, min, sd, cv
+variable_list <- names(landsat_ndvi[5:9])
+
+# Create blank list to store all plots
+p <- list()
+
+# Populate list `p` with a plot for each of the variables of interest
+for (i in variable_list) {
+    p[[i]] <- ggplot(data = landsat_ndvi, aes_string(x = "MMDD", y = i)) +
+        geom_point() +
+        geom_smooth() +
+        labs(x = "Date", title = i)
+    print(plot)
+}
+
+# Arrange all plots in list `p` in grid
+do.call(grid.arrange, p)
+
+# Save plot to outputs folder
+dev.print(pdf, paste0("/Users/elwoodk/Google_Drive/ElwoodK_Research/Computation/Landsat/landsat_mss_analysis_outputs/", "mss_all_variables_growing_season", ".pdf"))
+```
+
+```{r max-ndvi-over-time}
+# Create new dataframe that includes only overall max and min NDVI value for each year
+landsat_ndvi_yearly_max <- landsat_ndvi %>% 
+    group_by(YEAR) %>% 
+    summarise(NDVI_max = max(ndvi_max))
+
+# Plot of max NDVI (of a single pixel) for each year
+max_plot <- ggplot(data = landsat_ndvi_yearly_max, aes(x = YEAR, NDVI_max)) +
+    geom_point() +
+    geom_smooth(method = lm) +
+    labs(y = "NDVI\nmax(ndvi_max)")
+max_plot
+```
+
+```{r min-ndvi-over-time}
+# Create new dataframe that includes only overall max and min NDVI value for each year
+landsat_ndvi_yearly_min <- landsat_ndvi %>% 
+    group_by(YEAR) %>% 
+    summarise(NDVI_min = max(ndvi_min))
+
+# Plot of min NDVI (of a single pixel) for each year
+min_plot <- ggplot(data = landsat_ndvi_yearly_min, aes(x = YEAR, NDVI_min)) +
+    geom_point() +
+    geom_smooth(method = lm) +
+    labs(y = "NDVI\n max(ndvi_min)")
+min_plot
+
+# Full dataset lm:
+ndvi_min_lm <- lm(data = landsat_ndvi_yearly_min, yearly_min ~ YEAR)
+summary(ndvi_min_lm)
+
+# Explore whether there is a separate trend prior to 1984?
+landsat_ndvi_yearly_min_through1983 <- landsat_ndvi_yearly_min %>% 
+    subset(YEAR < 1984)
+
+ndvi_min_lm_through1983 <- lm(data = landsat_ndvi_yearly_min_through1983, yearly_min ~ YEAR)
+summary(ndvi_min_lm_through1983)
+```
+
+```{r plot-of-min-and-max-ndvi-over-time}
+# Plot both min and max:
+p2 <- list(max_plot, min_plot)
+do.call(grid.arrange, p2)
+
+# Save plot to outputs folder
+dev.print(pdf, paste0("/Users/elwoodk/Google_Drive/ElwoodK_Research/Computation/Landsat/landsat_mss_analysis_outputs/", "mss_max_and_min_over_time", ".pdf"))
+```
+
+```{r}
+# Calculate CV of max versus CV of min:
+ndvi_max_cv <- sd(landsat_ndvi_yearly_max$yearly_max)/mean(landsat_ndvi_yearly_max$yearly_max)
+ndvi_min_cv <- sd(landsat_ndvi_yearly_min$yearly_min)/mean(landsat_ndvi_yearly_min$yearly_min)
+ndvi_max_cv
+ndvi_min_cv
+```
+
+
+```{r histogram-of-data-points}
+
+# Histogram of how many scenes are available by week of the growing season
+ggplot(landsat_ndvi, aes(x = week(MMDD))) +
+    geom_histogram(binwidth = 7)
+
+# Histogram of how many scenes are available each year
+ggplot(landsat_ndvi, aes(x = YEAR)) +
+    geom_histogram(binwidth = 1, 
+                   center = 0)
+```
+
+
+# Precipitation
+
+```{r}
+# Load precipitation data for D1 site
+precip_d1 <- read.csv("/Users/elwoodk/Google_Drive/ElwoodK_Research/MasterDataSheets/NiwotLTERDataSets/precipitation/precip_d1/d-1pdayv.ml.data.csv", na.strings = "NaN") %>% 
+    mutate(DATE = as.POSIXct(date)) %>% 
+    mutate(MONTH = month(DATE)) %>% 
+    mutate(DAY = day(DATE)) %>% 
+    mutate(YEAR = year(DATE)) %>% 
+    mutate(MONTH_YEAR = paste0(MONTH, "-", YEAR))
+    
+# Convert date to hydrological year (HY; starts Nov. 1 of the preceding year)
+precip_startHY <- subset(precip_d1, MONTH > 10) %>% 
+    mutate(HYEAR = (YEAR + 1))
+precip_endHY <- subset(precip_d1, MONTH < 11) %>% 
+    mutate(HYEAR = YEAR)
+
+precip_d1_HY <- rbind(precip_startHY, precip_endHY)
+
+# Create new dataframe of monthly precip totals
+precip_monthly_totals <- precip_d1_HY %>% 
+    group_by(YEAR, MONTH) %>% 
+    summarise(monthly_total = sum(precip, na.rm = TRUE))
+
+# Create new dataframe of HY totals
+precip_HY_totals <- precip_d1_HY %>% 
+    group_by(YEAR) %>% 
+    summarize(yearly_total_precip = sum(precip, na.rm = TRUE))
+
+# Create new dataframe of accumulated precip totals from start of HY
+# (Currently, none of the following code works)
+precip_d1_HY_accum_total <- precip_d1_HY
+
+precip_d1_HY_accum_total[,"cum_sales"] <- cumsum(precip_d1_HY_accum_total$precip)
+
+precip_d1_HY_accum_total$cum_sum <- tapply(precip_d1_HY_accum_total$precip, precip_d1_HY_accum_total$YEAR, cumsum)
+```
+
+```{r}
+# Compare max NDVI with HY total precip
+yearly_summaries <- merge(precip_HY_totals, landsat_ndvi_yearly_max)
+plot_total_precip_max_ndvi <- ggplot(data = yearly_summaries, aes(x = yearly_total_precip, y = yearly_max)) +
+    geom_point() + 
+    geom_smooth(method = "lm") +
+    labs(y = "yearly_max_ndvi")
+plot_total_precip_max_ndvi
+
+# Compare min NDVI ith HY total precip
+yearly_summaries <- merge(yearly_summaries, landsat_ndvi_yearly_min)
+plot_total_precip_min_ndvi <- ggplot(data = yearly_summaries, aes(x = yearly_total_precip, y = yearly_min)) +
+    geom_point() + 
+    geom_smooth(method = "lm") +
+    labs(y = "yearly_min_ndvi")
+plot_total_precip_min_ndvi
+
+# Compare spatial CV of NDVI with HY total precip
+landsat_ndvi_yearly_min_cv <- landsat_ndvi %>% 
+    group_by(YEAR) %>% 
+    summarise(MIN_CV = min(ndvi_cv, na.rm = TRUE))
+    
+yearly_summaries <- merge(yearly_summaries, landsat_ndvi_yearly_min_cv)
+plot_total_precip_min_cv <- ggplot(data = yearly_summaries, aes(x = yearly_total_precip, y = MIN_CV)) +
+    geom_point() + 
+    geom_smooth(method = "lm") +
+    labs(y = "yearly_min_cv")
+
+# Max CV per year as a function of precip
+landsat_ndvi_yearly_max_cv <- landsat_ndvi %>% 
+    group_by(YEAR) %>% 
+    summarise(MAX_CV = max(ndvi_cv, na.rm = TRUE))
+    
+yearly_summaries <- merge(yearly_summaries, landsat_ndvi_yearly_max_cv)
+plot_total_precip_max_cv <- ggplot(data = yearly_summaries, aes(x = yearly_total_precip, y = MAX_CV)) +
+    geom_point() + 
+    geom_smooth(method = "lm") +
+    labs(y = "yearly_max_cv")
+
+
+# Plot both min and max:
+p3 <- list(plot_total_precip_max_ndvi, plot_total_precip_min_ndvi)
+do.call(grid.arrange, p3)
+
+# Save plot to outputs folder
+dev.print(pdf, paste0("/Users/elwoodk/Google_Drive/ElwoodK_Research/Computation/Landsat/landsat_mss_analysis_outputs/", "total_precip_v_ndvi", ".pdf"))
+```
+
+
+# Temperature between C1, D1, and Saddle
+```{r}
+temp_c1 <- read.csv("/Users/elwoodk/Google_Drive/ElwoodK_Research/MasterDataSheets/NiwotLTERDataSets/temperature/temp_c1/c-1tdayv.ml.data.csv", na.strings = "NaN")
+temp_d1 <- read.csv("/Users/elwoodk/Google_Drive/ElwoodK_Research/MasterDataSheets/NiwotLTERDataSets/temperature/temp_d1/d-1tdayv.ml.data.csv", na.strings = "NaN")
+temp_saddle <- read.csv("/Users/elwoodk/Google_Drive/ElwoodK_Research/MasterDataSheets/NiwotLTERDataSets/temperature/temp_saddle_1981-present/sdltdayv.ml.data.csv", na.strings = "NaN")
+
+temp_c1_renamed <- temp_c1 %>% 
+    mutate(C1_max_temp = max_temp) %>% 
+    mutate(C1_min_temp = min_temp) %>% 
+    mutate(C1_mean_temp = mean_temp)
+col_to_keep <- c("date", "C1_max_temp", "C1_min_temp", "C1_mean_temp")
+temp_c1_renamed2 <- temp_c1_renamed[, col_to_keep]
+
+temp_d1_renamed <- temp_d1 %>% 
+    mutate(D1_max_temp = max_temp) %>% 
+    mutate(D1_min_temp = min_temp) %>% 
+    mutate(D1_mean_temp = mean_temp)
+col_to_keep <- c("date", "D1_max_temp", "D1_min_temp", "D1_mean_temp")
+temp_d1_renamed2 <- temp_d1_renamed[, col_to_keep]
+
+temp_saddle_renamed <- temp_saddle %>% 
+    mutate(saddle_max_temp = max_temp) %>% 
+    mutate(saddle_min_temp = min_temp) %>% 
+    mutate(saddle_mean_temp = mean_temp)
+col_to_keep <- c("date", "saddle_max_temp", "saddle_min_temp", "saddle_mean_temp")
+temp_saddle_renamed2 <- temp_saddle_renamed[, col_to_keep]
+
+
+temp_c1_d1 <- merge(temp_c1_renamed2, temp_d1_renamed2)
+temp_c1_d1$date <- as.Date(temp_c1_d1$date)
+str(temp_c1_d1)
+temp_c1_d1_yearly <- temp_c1_d1 %>% 
+    mutate(YEAR = year(date)) %>% 
+    group_by(YEAR) %>% 
+    summarise(TEMP_maxofmean_C1minus10 = (max(C1_mean_temp, na.rm = TRUE) - 10))
+
+temp_all <- merge(temp_c1_d1, temp_saddle_renamed2)
+temp_all$date <- as.Date(temp_all$date)
+temp_all <- temp_all %>% 
+    mutate(YEAR = year(date))
+str(temp_all)
+
+temp_all_yearly <- temp_all %>% 
+    group_by(YEAR) %>% 
+    summarise(TEMP_MAX_of_MEAN_Saddle_appx = (max(C1_mean_temp, na.rm = TRUE) - 10))
+head(temp_all_yearly)
+```
+
+```{r}
+# Max
+temp_c1_d1_max_lm <- lm(data = temp_c1_d1, C1_max_temp ~ D1_max_temp)
+summary(temp_c1_d1_max_lm)
+
+plot(data = temp_c1_d1, C1_max_temp ~ D1_max_temp)
+abline(temp_c1_d1_max_lm)
+
+# Min
+temp_c1_d1_min_lm <- lm(data = temp_c1_d1, C1_min_temp ~ D1_min_temp)
+summary(temp_c1_d1_min_lm)
+
+plot(data = temp_c1_d1, C1_min_temp ~ D1_min_temp)
+abline(temp_c1_d1_min_lm)
+
+# Mean
+temp_c1_d1_mean_lm <- lm(data = temp_c1_d1, C1_mean_temp ~ D1_mean_temp)
+summary(temp_c1_d1_mean_lm)
+
+plot(data = temp_c1_d1, C1_mean_temp ~ D1_mean_temp)
+abline(temp_c1_d1_mean_lm)
+```
+
+```{r}
+temp_c1_saddle_max_lm <- lm(data = temp_all, C1_max_temp ~ saddle_max_temp)
+summary(temp_c1_saddle_max_lm)
+
+plot(data = temp_all, C1_max_temp ~ saddle_max_temp)
+abline(temp_c1_saddle_max_lm)
+```
+
+```{r}
+# NDVI and temp
+yearly_summaries2 <- merge(yearly_summaries, temp_c1_d1_yearly, by = "YEAR")
+plot_maxofmean_temp_max_ndvi <- ggplot(data = yearly_summaries2, aes(x = TEMP_maxofmean_C1minus10, y = yearly_max)) +
+    geom_point() + 
+    geom_smooth(method = "lm") +
+    labs(y = "yearly_max_ndvi")
+plot_maxofmean_temp_max_ndvi
+
+# Save plot to outputs folder
+dev.print(pdf, paste0("/Users/elwoodk/Google_Drive/ElwoodK_Research/Computation/Landsat/landsat_mss_analysis_outputs/", "maxofmeantemp_v_maxndvi", ".pdf"))
+```
+
+```{r}
+# Plot of max versus min NDVI
+ndvi_max_and_min <- merge(landsat_ndvi_yearly_max, landsat_ndvi_yearly_min)
+ndvi_max_and_min$YEAR <- as.ordered(ndvi_max_and_min$YEAR)
+ndvi_max_and_min_transposed <- t(ndvi_max_and_min)
+
+ndvi_max_min_plot <- ggplot(data = ndvi_max_and_min, aes(x = yearly_max)) +
+    geom_bar()
+
+ndvi_max_sd <- sd(ndvi_max_and_min$yearly_max)
+ndvi_min_sd <- sd(ndvi_max_and_min$yearly_min)
+ndvi_max_mean <- mean(ndvi_max_and_min$yearly_max)
+ndvi_min_mean <- mean(ndvi_max_and_min$yearly_min)
+
+ndvi_max_and_min_summary <- data.frame(MEAN = c(ndvi_max_mean, ndvi_min_mean), 
+                                       SD = c(ndvi_max_sd, ndvi_min_sd), 
+                                       CV = c(ndvi_max_cv, ndvi_min_cv),
+                                       row.names = c("max", "min"))
+
+# Create barplot
+plotCI(barplot(height = ndvi_max_and_min_summary[,1], # the height of the bar will be the mean for each veg cover Treatment
+               beside = TRUE, # Plot bars side-by-side
+               ylim = c(0, 1.5), # Set limits for y-axis
+               # main = "TITLE", 
+               # xlab = "X-AXIS NAME",
+               ylab = "NDVI",
+               col = c("forestgreen", "limegreen"), # Set colors
+              names.arg = c("Max Annual NDVI", "Min Annual NDVI")), # Set names of the treatments
+       ndvi_max_and_min_summary[,1], # The location of the error bars is around the mean
+       uiw = ndvi_max_and_min_summary[,1], # Set the width of the error bars as the values of SE
+       add = TRUE, # Add the error bars to the barplot
+       pch = NA) # Don't include a circle around the mean
+```
+
+```{r}
+plot(ndvi_max_and_min$yearly_max, ndvi_max_and_min$yearly_min)
+```
+

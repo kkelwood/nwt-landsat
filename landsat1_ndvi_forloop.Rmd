@@ -1,0 +1,162 @@
+---
+title: "Landsat1_NDVI_ForLoop"
+author: "Kelsey Elwood"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+# load libraries
+library(raster)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+library(maptools)
+library(png)
+library(sp)
+library(knitr)
+library(RColorBrewer)
+library(rasterVis)
+library(ggplot2)
+library(jpeg)
+library(lubridate)
+```
+
+```{r function-file}
+# get source function file
+source("/Users/elwoodk/Google_Drive/ElwoodK_Research/Computation/General-R-Code/remote-sensing-functions.R") # Included with file
+
+```
+
+```{r}
+# Load in the spatial extent file:
+sensor_boundary <- readOGR("/Users/elwoodk/Google_Drive/ElwoodK_Research/Computation/Spatial_Files/sensor_polygon_complex/sensor_polygon_complex2.shp")
+```
+
+```{r for-loop-landsat-1}
+# This code only works for Landsat with MSS sensor (Landsat 1 - 5)
+
+# Get list of landsat 1 files:
+landsat_zip_filelist <- list.files("/Volumes/PHENOCAMWSN/Landsat_EarthExplorer/Landsat_1-5_MSS",
+                                   full.names = TRUE)
+
+# Create and write blank dataframe
+landsat_df <- data.frame(landsat_mission = as.numeric(),
+                         sensor = as.character(),
+                         date = as.numeric(),
+                         pixel_count = as.numeric(),
+                         ndvi_max = as.numeric(),
+                         ndvi_min = as.numeric(),
+                         ndvi_mean = as.numeric(),
+                         ndvi_sd = as.numeric(),
+                         ndvi_cv = as.numeric())
+write.csv(x = landsat_df, 
+          file = "/Volumes/PHENOCAMWSN/Landsat_EarthExplorer/Output/landsat_ndvi.csv",
+          row.names = FALSE)
+
+# For loop of landsat 1 data:
+for (i in seq_along(landsat_zip_filelist)) {
+    
+    # Define location of files
+    unzipped_directory <- paste0("/Volumes/PHENOCAMWSN/Landsat_EarthExplorer/Unzipped/Landsat_1-5_MSS/", basename(landsat_zip_filelist[i]))
+                                 
+    # Unzip the file from the tarball (.tar.gz)
+    unzip_file <- untar(landsat_zip_filelist[i], 
+                        list = FALSE,
+                        exdir = unzipped_directory)
+    
+    # Get list of .TIF files in new unzipped folder
+    unzip_bands_list <- list.files(path = unzipped_directory, 
+                                   pattern = glob2rx(pattern = "*_B*.TIF$"),
+                                   full.names = TRUE,
+                                   recursive = FALSE)
+    
+    # Create stack, then brick of the bands
+    landsat_st <- stack(unzip_bands_list)
+    landsat_br <- brick(landsat_st)
+
+    # convert crs of sensor boundary to the crs of the sensor_boundary
+    sensor_boundary_utm <- spTransform(sensor_boundary, CRS = crs(landsat_br))
+    
+    # Crop landsat1 brick
+    landsat_crop <- crop(landsat_br, sensor_boundary_utm)
+    landsat_mask <- mask(landsat_crop, sensor_boundary_utm)
+    
+    # Calculate NDVI for landsat1_mask
+    mss_ndvi <- overlay(landsat_mask[[2]],
+                        landsat_mask[[4]],
+                        fun = norm_diff) 
+    
+    # Explore NDVI values for layer:
+    scene_ndvi_max <- cellStats(mss_ndvi, stat = "max", na.rm = TRUE)
+    scene_ndvi_min <- cellStats(mss_ndvi, stat = "min", na.rm = TRUE)
+    scene_ndvi_mean <- cellStats(mss_ndvi, stat = "mean", na.rm = TRUE)
+    scene_ndvi_sd <- cellStats(mss_ndvi, stat = "sd", na.rm = TRUE, asSample = TRUE)
+    scene_ndvi_cv <- 100*(scene_ndvi_sd/scene_ndvi_mean)
+    
+    # Calculate number of pixels
+    ndvi_pixels_extent <- landsat1_ndvi@data@values
+    ndvi_pixels_crop <- na.omit(ndvi_pixels_extent) 
+    ndvi_pixels_crop <- as.numeric(ndvi_pixels_crop)
+    ndvi_pixel_count <- length(ndvi_pixels_crop)
+    
+    # Extract satellite/sensor information
+    base_name_with_extension <- basename(landsat_zip_filelist[i])
+    base_name <- substr(base_name_with_extension, 1, 21)
+    landsat_sat <- substr(base_name, 3, 3)
+    landsat_sensor <- substr(base_name, 2, 2)
+    
+    # Extract date
+    scene_year <- as.numeric(substr(base_name, 10, 13))
+    scene_doy <- as.numeric(substr(base_name, 14, 16))
+    origin_date <- paste0((scene_year - 1), "-12-31")
+    scene_date <- as.Date(scene_doy, origin = origin_date)
+    scene_month <- month(scene_date)
+    scene_day <- day(scene_date)
+    date_as_character <- paste0()
+
+
+    # Create dataframe of ndvi summary data
+    temp_df <- data.frame(landsat_mission = landsat_sat,
+                          sensor = landsat_sensor,
+                          date = scene_date,
+                          pixel_count = ndvi_pixel_count,
+                          ndvi_max = scene_ndvi_max,
+                          ndvi_min = scene_ndvi_min,
+                          ndvi_mean = scene_ndvi_mean,
+                          ndvi_sd = scene_ndvi_sd,
+                          ndvi_cv = scene_ndvi_cv)
+    
+    # Load and merge with existing NDVI csv file
+    old_csv <- read.csv("/Volumes/PHENOCAMWSN/Landsat_EarthExplorer/Output/landsat_ndvi.csv") %>% 
+        mutate(date = as.Date(date))
+    merged_df <- rbind(old_csv, temp_df)
+    write.csv(x = merged_df, 
+              file = "/Volumes/PHENOCAMWSN/Landsat_EarthExplorer/Output/landsat_ndvi.csv",
+              row.names = FALSE)
+    
+    # Plot scene NDVI
+    plot_ndvi <- plot(round(landsat_ndvi, digits = 2),
+                      main = scene_date,
+                      # col = ndvi_colors,
+                      col = rev(terrain.colors(11)),
+                      breaks = seq(-1, 1, length.out = 11), 
+                      pin = c(4,5),
+                      legend = TRUE,
+                      legend.args = list(text = 'NDVI Value', side = 2, font = 2, line = 0, cex = 1))
+    
+    # Save NDVI plot to Landsat_NDVI_plots folder
+    dev.print(pdf, paste0("/Volumes/PHENOCAMWSN/Landsat_EarthExplorer/Output/Landsat_NDVI_plots/", "L", landsat_sat, "_", scene_date, ".pdf"))
+    
+    # Clear dev
+    dev.new()
+    
+    # Print the progress...
+    print(paste("Finished", i, " of ", length(landsat_zip_filelist)))
+}
+
+```
